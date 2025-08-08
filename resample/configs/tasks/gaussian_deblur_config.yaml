@@ -6,7 +6,7 @@ conditioning:
 
 data:
   name: celeb
-  root: ./data/samples/
+  root: ./data/coco/
 
 measurement:
   operator:

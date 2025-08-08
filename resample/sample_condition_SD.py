@@ -12,13 +12,14 @@ import torch
 import torchvision.transforms as transforms
 import argparse
 from omegaconf import OmegaConf
-from ldm.util import instantiate_from_config
+# from ldm.util import instantiate_from_config
+# from ..stablediffusion.ldm.util import instantiate_from_config
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
 
 def get_model(args):
     config = OmegaConf.load(args.ldm_config)
-    model = load_model_from_config(config, args.diffusion_config)
+    model = load_model_from_config(config, args.diffusion_config, torch.device(args.device), "stable_diffusion")
 
     return model
 
@@ -28,7 +29,7 @@ parser.add_argument('--model_config', type=str)
 parser.add_argument('--ldm_config', default="configs/latent-diffusion/ffhq-ldm-vq-4.yaml", type=str)
 parser.add_argument('--diffusion_config', default="models/ldm/model.ckpt", type=str)
 parser.add_argument('--task_config', default="configs/tasks/gaussian_deblur_config.yaml", type=str)
-parser.add_argument('--gpu', type=int, default=0)
+parser.add_argument("--device",type=str,help="Device on which Stable Diffusion will be run",choices=["cpu", "cuda"],default="cuda")
 parser.add_argument('--save_dir', type=str, default='./results')
 parser.add_argument('--ddim_steps', default=500, type=int)
 parser.add_argument('--ddim_eta', default=0.0, type=float)
@@ -66,10 +67,10 @@ print(f"Conditioning sampler : {task_config['conditioning']['main_sampler']}")
 sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_cond_fn, operator_fn=operator.forward,
                                         S=args.ddim_steps,
                                         cond_method=task_config['conditioning']['main_sampler'],
-                                        conditioning=None,
+                                        conditioning= model.get_learned_conditioning(args.n_samples_per_class * [""]),
                                         ddim_use_original_steps=True,
                                         batch_size=args.n_samples_per_class,
-                                        shape=[3, 64, 64], # Dimension of latent space
+                                        shape=[4, 32, 32], # Dimension of latent space
                                         verbose=False,
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
