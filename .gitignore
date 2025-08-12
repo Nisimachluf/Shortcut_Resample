@@ -4,3 +4,5 @@ resample/moionblur
 resample/results
 **egg-info**
 **/__pycache__
+datasets
+data
