@@ -28,7 +28,10 @@ class ConditioningMethod(ABC):
     
     def grad_and_value(self, x_prev, x_0_hat, measurement, **kwargs):
         if self.noiser.__name__ == 'gaussian':
+            # this function implements \nabla_{x_t} ||y - A(\hat{x_0(x_t)})||^2
+            verbose = kwargs.get("verbose", False)
             difference = measurement - self.operator.forward(self.model.differentiable_decode_first_stage( x_0_hat ), **kwargs)
+            if verbose: print(f"DPS takes the MSE grad in pixel space (diff shape: {difference.shape})")
             norm = torch.linalg.norm(difference)
             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]         
         elif self.noiser.__name__ == 'poisson':

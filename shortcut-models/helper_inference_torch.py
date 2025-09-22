@@ -143,7 +143,7 @@ if __name__ == "__main__":
 
     def get_args():
         parser = argparse.ArgumentParser(description="Torch DiT Inference with optional FID calculation")
-        parser.add_argument('--model_ckpt_path', type=str, default="/media/embedded/Users/Nisim/MSc/AdvancedTopicImageandSP/final_project/shortcut-models/dit_pytorch_checkpoint.pth", help='Path to Torch DiT checkpoint')
+        parser.add_argument('--model_ckpt_path', type=str, default="checkpoints/dit_pytorch_checkpoint.pth", help='Path to Torch DiT checkpoint')
         parser.add_argument('--out_dir', type=str, default=None, help='Output directory for images and npy')
         parser.add_argument('--batch_size', type=int, default=32, help='Batch size for inference')
         parser.add_argument('--image_size', type=int, default=32, help='Image size')

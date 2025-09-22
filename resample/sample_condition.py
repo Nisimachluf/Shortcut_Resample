@@ -70,7 +70,7 @@ sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_c
                                         ddim_use_original_steps=True,
                                         batch_size=args.n_samples_per_class,
                                         shape=[3, 64, 64], # Dimension of latent space
-                                        verbose=False,
+                                        verbose=True,
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
                                         eta=args.ddim_eta)
