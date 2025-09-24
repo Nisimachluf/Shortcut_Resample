@@ -3,7 +3,7 @@ from PIL import Image
 from typing import Callable, Optional
 from torch.utils.data import DataLoader
 from torchvision.datasets import VisionDataset
-
+import random
 
 __DATASET__ = {}
 
@@ -53,6 +53,15 @@ class CELEBDataset(VisionDataset):
             img = self.transforms(img)
         
         return img
+    
+    def sample(self, n, shuffle=True):
+        if len(self.fpaths) <=n:
+            return
+        if shuffle:
+            random.seed(42)
+            random.shuffle(self.fpaths)
+        self.fpaths = sorted(self.fpaths[:n])
+             
     
 
 @register_dataset(name='ffhq')

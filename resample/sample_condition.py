@@ -14,7 +14,7 @@ import argparse
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
 from skimage.metrics import peak_signal_noise_ratio as psnr
-
+from metrics import LPIPS, PSNR, SSIM
 
 def get_model(args):
     config = OmegaConf.load(args.ldm_config)
@@ -34,6 +34,7 @@ parser.add_argument('--ddim_steps', default=500, type=int)
 parser.add_argument('--ddim_eta', default=0.0, type=float)
 parser.add_argument('--n_samples_per_class', default=1, type=int)
 parser.add_argument('--ddim_scale', default=1.0, type=float)
+parser.add_argument('--sample', default=128, type=float)
 
 args = parser.parse_args()
 
@@ -86,11 +87,16 @@ data_config = task_config['data']
 transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))] )
 dataset = get_dataset(**data_config, transforms=transform)
+dataset.sample(args.sample)
 loader = get_dataloader(dataset, batch_size=1, num_workers=0, train=False)
 
 # Exception) In case of inpainting, we need to generate a mask 
 if measure_config['operator']['name'] == 'inpainting':
   mask_gen = mask_generator(**measure_config['mask_opt'])
+
+metrics = {"lpips": LPIPS(), 
+           "psnr": PSNR(),
+           "ssim": SSIM()}
 
 # Do inference
 for i, ref_img in enumerate(loader):
@@ -131,5 +137,9 @@ for i, ref_img in enumerate(loader):
     plt.imsave(os.path.join(out_path, 'recon', fname+'_recon.png'), reconstructed)
 
     psnr_cur = psnr(true, reconstructed)
+    for met_name, metric in metrics.items():
+      metric(true, reconstructed)
 
-    print('PSNR:', psnr_cur)
+for met_name, metric in metrics.items():
+  print(f"{met_name}: {metric.mean}")
+
