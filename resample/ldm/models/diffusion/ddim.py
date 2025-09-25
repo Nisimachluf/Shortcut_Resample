@@ -258,7 +258,7 @@ class DDIMSampler(object):
             # x_prev - the prediction of x_{t-1}
             # pred_x0, - estimation of x0 using (x_t-\sqrt(1-at)e(x_t, t))/a_t
             # pseudo_x0 - estimation of x0 using (x_t-(1-at)e(x_t, t))/a_t
-            print(f"Runnign DDIM sampling with t={ts.item()}, index={index}")
+            if verbose: print(f"Runnign DDIM sampling with t={ts.item()}, index={index}")
             out, pred_x0, pseudo_x0 = self.p_sample_ddim(img, cond, ts, index=index, use_original_steps=ddim_use_original_steps,
                                       quantize_denoised=quantize_denoised, temperature=temperature,
                                       noise_dropout=noise_dropout, score_corrector=score_corrector,
@@ -295,7 +295,7 @@ class DDIMSampler(object):
                         index_ = total_steps - k - 1
                         if verbose: print(f"Trio: step_={step_.item()}, ts_={ts_.item()}, index_={index_}")
                         # Obtain x_{t-k}
-                        print(f"Runnign DDIM sampling with t={ts_.item()}, index={index_}")
+                        if verbose: print(f"Runnign DDIM sampling with t={ts_.item()}, index={index_}")
                         img, pred_x0, pseudo_x0 = self.p_sample_ddim(img, cond, ts_, index=index_, use_original_steps=ddim_use_original_steps,
                                             quantize_denoised=quantize_denoised, temperature=temperature,
                                             noise_dropout=noise_dropout, score_corrector=score_corrector,

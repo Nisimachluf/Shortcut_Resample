@@ -29,12 +29,12 @@ parser.add_argument('--ldm_config', default="configs/latent-diffusion/ffhq-ldm-v
 parser.add_argument('--diffusion_config', default="models/ldm/model.ckpt", type=str)
 parser.add_argument('--task_config', default="configs/tasks/gaussian_deblur_config.yaml", type=str)
 parser.add_argument('--gpu', type=int, default=0)
-parser.add_argument('--save_dir', type=str, default='./results')
+parser.add_argument('--save_dir', type=str, required=False)
 parser.add_argument('--ddim_steps', default=500, type=int)
 parser.add_argument('--ddim_eta', default=0.0, type=float)
 parser.add_argument('--n_samples_per_class', default=1, type=int)
 parser.add_argument('--ddim_scale', default=1.0, type=float)
-parser.add_argument('--sample', default=128, type=float)
+parser.add_argument('--sample', default=128, type=int)
 
 args = parser.parse_args()
 
@@ -71,16 +71,17 @@ sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_c
                                         ddim_use_original_steps=True,
                                         batch_size=args.n_samples_per_class,
                                         shape=[3, 64, 64], # Dimension of latent space
-                                        verbose=True,
+                                        verbose=False,
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
                                         eta=args.ddim_eta)
 
 # Working directory
-out_path = os.path.join(args.save_dir)
-os.makedirs(out_path, exist_ok=True)
-for img_dir in ['input', 'recon', 'progress', 'label']:
-    os.makedirs(os.path.join(out_path, img_dir), exist_ok=True)
+if args.save_dir:
+  out_path = os.path.join(args.save_dir)
+  os.makedirs(out_path, exist_ok=True)
+  for img_dir in ['input', 'recon', 'progress', 'label']:
+      os.makedirs(os.path.join(out_path, img_dir), exist_ok=True)
 
 # Prepare dataloader
 data_config = task_config['data']
@@ -131,10 +132,11 @@ for i, ref_img in enumerate(loader):
     reconstructed = clear_color(x_samples_ddim)
     true = clear_color(ref_img)
 
-    # Saving images
-    plt.imsave(os.path.join(out_path, 'input', fname+'_true.png'), true)
-    plt.imsave(os.path.join(out_path, 'label', fname+'_label.png'), label)
-    plt.imsave(os.path.join(out_path, 'recon', fname+'_recon.png'), reconstructed)
+    if args.save_dir:
+      # Saving images
+      plt.imsave(os.path.join(out_path, 'input', fname+'_true.png'), true)
+      plt.imsave(os.path.join(out_path, 'label', fname+'_label.png'), label)
+      plt.imsave(os.path.join(out_path, 'recon', fname+'_recon.png'), reconstructed)
 
     psnr_cur = psnr(true, reconstructed)
     for met_name, metric in metrics.items():
@@ -142,4 +144,11 @@ for i, ref_img in enumerate(loader):
 
 for met_name, metric in metrics.items():
   print(f"{met_name}: {metric.mean}")
+  
+if args.save_dir:
+  with open(os.path.join(out_path, "metrics_results.csv"), "w") as f:
+    f.write(f"N,{len(dataset)}\n")
+    for met_name, metric in metrics.items():
+      f.write(f"{met_name},{metric.mean}\n")
+    
 
