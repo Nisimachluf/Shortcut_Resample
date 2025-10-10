@@ -8,6 +8,7 @@ shortcut-models/results/orig_jax/*
 shortcut-models/results/torch/full/*
 !shortcut-models/results/torch/full/*.npz
 shortcut-models/results/torch/orig/*
+shortcut-models/results/integration
 !shortcut-models/results/torch/orig/*.npz
 shortcut-models/checkpoints
 shortcut-models/notebooks/.ipynb_checkpoints

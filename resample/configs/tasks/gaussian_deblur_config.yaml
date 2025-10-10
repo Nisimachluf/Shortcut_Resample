@@ -6,7 +6,8 @@ conditioning:
 
 data:
   name: celeb
-  root: ./data/samples/
+  # root: ./data/samples/
+  root: /media/embedded/Datasets/Public/CelebAhq256/validation/
 
 measurement:
   operator:

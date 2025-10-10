@@ -30,6 +30,7 @@ class ConditioningMethod(ABC):
         if self.noiser.__name__ == 'gaussian':
             # this function implements \nabla_{x_t} ||y - A(\hat{x_0(x_t)})||^2
             verbose = kwargs.get("verbose", False)
+            if verbose: print("Applying decoder on input of shape", x_0_hat.shape)
             difference = measurement - self.operator.forward(self.model.differentiable_decode_first_stage( x_0_hat ), **kwargs)
             if verbose: print(f"DPS takes the MSE grad in pixel space (diff shape: {difference.shape})")
             norm = torch.linalg.norm(difference)

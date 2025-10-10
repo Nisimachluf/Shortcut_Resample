@@ -1,5 +1,8 @@
+import sys
+sys.path.append("../resample")
 from ldm_inverse.condition_methods import get_conditioning_method
-from ldm.models.diffusion.ddim import DDIMSampler
+from shortcut_sampler import ShortcutSampler
+from shortcut_model import ShortcutModel
 from data.dataloader import get_dataset, get_dataloader
 from scripts.utils import clear_color, mask_generator
 import matplotlib.pyplot as plt
@@ -16,21 +19,13 @@ from ldm.util import instantiate_from_config
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from metrics import LPIPS, PSNR, SSIM
 
-def get_model(args):
-    config = OmegaConf.load(args.ldm_config)
-    model = load_model_from_config(config, args.diffusion_config)
-
-    return model
-
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model_config', type=str)
-parser.add_argument('--ldm_config', default="configs/latent-diffusion/ffhq-ldm-vq-4.yaml", type=str)
-parser.add_argument('--diffusion_config', default="models/ldm/model.ckpt", type=str)
+parser.add_argument('--model_config', default="shortcutmodel_args.yaml", type=str)
 parser.add_argument('--task_config', default="configs/tasks/gaussian_deblur_config.yaml", type=str)
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--save_dir', type=str, required=False)
-parser.add_argument('--ddim_steps', default=500, type=int)
+parser.add_argument('--shortcut_steps', default=128, type=int)
 parser.add_argument('--ddim_eta', default=0.0, type=float)
 parser.add_argument('--n_samples_per_class', default=1, type=int)
 parser.add_argument('--ddim_scale', default=1.0, type=float)
@@ -48,8 +43,8 @@ print(f"Device set to {device_str}.")
 device = torch.device(device_str)  
 
 # Loading model
-model = get_model(args)
-sampler = DDIMSampler(model) # Sampling using DDIM
+model = ShortcutModel(args.model_config, device)
+sampler = ShortcutSampler(model) # Sampling using DDIM
 
 # Prepare Operator and noise
 measure_config = task_config['measurement']
@@ -65,12 +60,11 @@ print(f"Conditioning sampler : {task_config['conditioning']['main_sampler']}")
 
 # Instantiating sampler
 sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_cond_fn, operator_fn=operator.forward,
-                                        S=args.ddim_steps,
                                         cond_method=task_config['conditioning']['main_sampler'],
                                         conditioning=None,
                                         ddim_use_original_steps=True,
                                         batch_size=args.n_samples_per_class,
-                                        shape=[3, 64, 64], # Dimension of latent space
+                                        shape=[4, 32, 32], # Dimension of latent space
                                         verbose=True,
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
