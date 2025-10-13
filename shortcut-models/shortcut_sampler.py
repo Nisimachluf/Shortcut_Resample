@@ -12,6 +12,33 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 from scripts.utils import clear_color
 from sampling_tools import denoising_step, build_step_schedule, shortest_plan_to_end
 
+from typing import Set
+
+def action_indices_on_coarse_grid(N: int, base: int = 128, interval: int = 10) -> Set[int]:
+    """
+    Return set of coarse indices j in [0, N-1] that are the nearest mappings
+    of original action positions {0, interval, 2*interval, ...} on a timeline of length `base`.
+    Rounding rule: j = int(a * N / base + 0.5). Clamped to [0, N-1].
+    """
+    if N <= 0 or (N & (N - 1)) != 0:
+        raise ValueError("N must be a positive power of two (e.g. 1,2,4,8,16,32,64...).")
+    indices = set()
+    for a in range(0, base, interval):
+        j = int((a * N) / base + 0.5)
+        if j >= N:
+            j = N - 1
+        indices.add(j)
+    return indices
+
+def is_closest_action(N: int, i: int, base: int = 128, interval: int = 10) -> bool:
+    """
+    Return True if coarse index i (0 <= i < N) is the nearest coarse position
+    to at least one original action (multiples of `interval` on [0..base-1]).
+    """
+    if not (0 <= i < N):
+        raise ValueError("i must be in range(0, N)")
+    return i in action_indices_on_coarse_grid(N, base=base, interval=interval)
+
 class ShortcutSampler(object):
     def __init__(self, model, schedule="linear", **kwargs):
         super().__init__()
@@ -161,7 +188,7 @@ class ShortcutSampler(object):
         # self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=verbose)
         # sampling
         C, H, W = shape
-        size = (batch_size, H, W, C)
+        size = (batch_size,C, H, W)
         print(f'Data shape for DDIM sampling is {size}, eta {eta}')
 
         if cond_method is None or cond_method == 'resample':
@@ -189,7 +216,14 @@ class ShortcutSampler(object):
         
         return samples, intermediates
 
-
+    @staticmethod
+    def calc_a_t(step, step_size):
+        return step / step_size
+    
+    @staticmethod
+    def calc_a_prev(step, step_size):
+        return ShortcutSampler.calc_a_t(step-1, step_size)
+    
     def resample_sampling(self, measurement, measurement_cond_fn, cond, shape, operator_fn=None,
                      inter_timesteps=10, x_T=None,
                      callback=None, timesteps=None, quantize_denoised=False,
@@ -207,7 +241,8 @@ class ShortcutSampler(object):
 
         """
 
-        inter_timesteps = 5
+        inter_timesteps = 0
+        gamma = 1
         device = self.model.device
         b = shape[0]
         if x_T is None:
@@ -218,7 +253,7 @@ class ShortcutSampler(object):
         img = img.requires_grad_() # Require grad for data consistency
 
         if timesteps is None:
-            timesteps = 128 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+            timesteps = 32 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
             if verbose: print("got None timesteps {}".format(f"using default timesteps {timesteps}"))
 
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
@@ -230,14 +265,23 @@ class ShortcutSampler(object):
         # alphas_prev = self.model.alphas_cumprod_prev if ddim_use_original_steps else self.ddim_alphas_prev
         # betas = self.model.betas
         
-        schedule = list(zip(*build_step_schedule((1, ), (128,))))
+        # schedule = list(zip(*build_step_schedule((32/128,16/128, 80/128, ), (4, 8, 64))))
+        schedule = list(zip(*build_step_schedule((1, ), (64,))))
         iterator = tqdm(schedule, desc='Shortcut Sampler', total=len(schedule))
 
         # each of the time steps starting from the original ddpm number of steps, ddpm steps size
+        # x_t = (1-t)x_0 + tx_1
         for i, (step, dts) in enumerate(iterator):
+            # a_t is the fractional path in [0, 1] from pure noise(0) to real image (1)
+            t = ShortcutSampler.calc_a_t(step, dts)
+            t_prev = ShortcutSampler.calc_a_t(step, dts) 
+            a_t = torch.full((b, 1, 1, 1), t, device=device, requires_grad=False) # Needed for ReSampling
+            a_prev = torch.full((b, 1, 1, 1), t_prev, device=device, requires_grad=False) # Needed for ReSampling
+            
+            
             # i counts from 0 to 499 (the number of ddim steps)        
             # Instantiating parameters
-            index = total_steps - i - 1 #index the actual ddim steps, backwards
+            # index = total_steps - i - 1 #index the actual ddim steps, backwards
             # ts = torch.full((b,), step, device=device, dtype=torch.long) # batch size of current time step
             # a_t = torch.full((b, 1, 1, 1), alphas[index], device=device, requires_grad=False) # Needed for ReSampling
             # a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device, requires_grad=False) # Needed for ReSampling
@@ -276,18 +320,20 @@ class ShortcutSampler(object):
                 continue
             # Instantiating time-travel parameters
             splits = 3 # TODO: make this not hard-coded
-            index_split = total_steps // splits
+            phase_1 = 1/splits
+            phase_2 = 2/splits
 
             # Performing time-travel if in selected indices
-            if index <= (total_steps - index_split) and index > 0:   
+            if a_t >= phase_1:   
                 x_t = img.detach().clone()
 
                 # Performing only every 10 steps (or so)
                 # TODO: also make this not hard-coded
-                if index % 10 == 0 :
-                    if verbose: print(f"Index = {index}")
-                    if verbose: print(f"Iterating over  = {list(range(i, min(i+inter_timesteps, len(list( reversed(timesteps) ))-1)))}")
-                    for k in range(i, min(i+inter_timesteps, len(list( reversed(timesteps) ))-1)):
+                if i % 10 == 0 :
+                # if is_closest_action(dts,i): # % 1 == 0 :
+                    if verbose: print(f"Index = {i}")
+                    if verbose: print(f"Iterating over  = {list(range(i, min(i+inter_timesteps, -1)))}")
+                    for k in range(i, min(i+inter_timesteps, timesteps-1)):
                         step_ = list( reversed(timesteps))[k+1]
                         ts_ = torch.full((b,), step_, device=device, dtype=torch.long)
                         index_ = total_steps - k - 1
@@ -303,13 +349,13 @@ class ShortcutSampler(object):
                                             verbose=verbose)
                         
                     # Some arbitrary scheduling for sigma
-                    if index >= 0:
-                        sigma = 40*(1 - a_prev) / (1 - a_t) * (1 - a_t / a_prev)  
+                    if dts-step > 1: #not last step
+                        sigma = gamma*(1 - a_prev) / (1 - a_t) * (1 - a_t / a_prev)  
                     else:
                         sigma = 0.5
 
                     # Pixel-based optimization for second stage
-                    if index >= index_split: 
+                    if a_t <= phase_2: 
                         
                         # Enforcing consistency via pixel-based optimization
                         pseudo_x0 = pseudo_x0.detach() 
@@ -317,7 +363,8 @@ class ShortcutSampler(object):
 
                         opt_var = self.pixel_optimization(measurement=measurement, 
                                                           x_prime=pseudo_x0_pixel,
-                                                          operator_fn=operator_fn)
+                                                          operator_fn=operator_fn,
+                                                             verbose=verbose)
                         
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
 
@@ -325,35 +372,37 @@ class ShortcutSampler(object):
                         img = img.requires_grad_() # Seems to need to require grad here
 
                     # Latent-based optimization for third stage
-                    elif index < index_split: # Needs to (possibly) be tuned
+                    elif a_t > phase_2: # Needs to (possibly) be tuned
 
                         # Enforcing consistency via latent space optimization
                         pseudo_x0, _ = self.latent_optimization(measurement=measurement,
                                                              z_init=pseudo_x0.detach(),
-                                                             operator_fn=operator_fn)
+                                                             operator_fn=operator_fn,
+                                                             verbose=verbose)
 
 
-                        sigma = 40 * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task
+                        sigma = gamma * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task
 
                         img = self.stochastic_resample(pseudo_x0=pseudo_x0, x_t=x_t, a_t=a_prev, sigma=sigma) 
 
             # Callback functions if needed
             if callback: callback(i)
             if img_callback: img_callback(pred_x0, i)
-            if index % log_every_t == 0 or index == total_steps - 1:
+            if i % log_every_t == 0 or i == total_steps - 1:
                 intermediates['x_inter'].append(img)
                 intermediates['pred_x0'].append(pred_x0)       
         
-        if only_dps:
+        if not only_dps:
             psuedo_x0, _ = self.latent_optimization(measurement=measurement,
                                                              z_init=img.detach(),
-                                                             operator_fn=operator_fn)
+                                                             operator_fn=operator_fn,
+                                                             verbose=verbose)
             img = psuedo_x0.detach().clone()
             
         return img, intermediates
 
 
-    def pixel_optimization(self, measurement, x_prime, operator_fn, eps=1e-3, max_iters=2000):
+    def pixel_optimization(self, measurement, x_prime, operator_fn, eps=1e-3, max_iters=2000, verbose=False):
         """
         Function to compute argmin_x ||y - A(x)||_2^2
 
@@ -373,7 +422,7 @@ class ShortcutSampler(object):
         measurement = measurement.detach() # Need to detach for weird PyTorch reasons
 
         # Training loop
-
+        stopped = False
         for _ in range(max_iters):
             optimizer.zero_grad()
             
@@ -384,12 +433,15 @@ class ShortcutSampler(object):
 
             # Convergence criteria
             if measurement_loss < eps**2: # needs tuning according to noise level for early stopping
+                if verbose: print("Pixel optimization reached early stopping")
+                stopped = True
                 break
-
+        if verbose and not stopped:
+            print(f"Pixel optimization reached max iterations ({max_iters}), last loss {measurement_loss:.3e} (eps={(eps**2):.3e})")
         return opt_var
 
 
-    def latent_optimization(self, measurement, z_init, operator_fn, eps=1e-3, max_iters=500, lr=None):
+    def latent_optimization(self, measurement, z_init, operator_fn, eps=1e-3, max_iters=500, lr=None, verbose=False):
 
         """
         Function to compute argmin_z ||y - A( D(z) )||_2^2
@@ -421,7 +473,7 @@ class ShortcutSampler(object):
         # Training loop
         init_loss = 0
         losses = []
-        
+        stopped = False
         for itr in range(max_iters):
             optimizer.zero_grad()
             output = loss(measurement, operator_fn( self.model.differentiable_decode_first_stage( z_init ) ))          
@@ -440,14 +492,19 @@ class ShortcutSampler(object):
             else:
                 losses.append(cur_loss)
                 if losses[0] < cur_loss:
+                    if verbose: print("Latent optimization reached early stopping (flat loss)")
+                    stopped = True
                     break
                 else:
                     losses.pop(0)
                     
             if cur_loss < eps**2:  # needs tuning according to noise level for early stopping
+                if verbose: print("Latent optimization reached early stopping (under treshold)")
+                stopped = True
                 break
 
-
+        if verbose and not stopped:
+            print(f"Latent optimization reached max iterations ({max_iters}), last loss {cur_loss:.3e} (eps={(eps**2):.3e})")
         return z_init, init_loss       
 
 
@@ -455,7 +512,7 @@ class ShortcutSampler(object):
         """
         Function to resample x_t based on ReSample paper.
         """
-        device = self.model.betas.device
+        device = self.model.device
         noise = torch.randn_like(pseudo_x0, device=device)
         return (sigma * a_t.sqrt() * pseudo_x0 + (1 - a_t) * x_t)/(sigma + 1 - a_t) + noise * torch.sqrt(1/(1/sigma + 1/(1-a_t)))
 

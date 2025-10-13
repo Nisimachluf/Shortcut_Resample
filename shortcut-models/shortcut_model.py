@@ -44,12 +44,12 @@ class ShortcutModel(nn.Module):
         """
         Decode latent z to image using VAE decoder (no grad).
         """
-        z= torch.permute(z, (0, 3, 1, 2))
+        # z= torch.permute(z, (0, 3, 1, 2))
         return self.vae.decode(z)
 
     def differentiable_decode_first_stage(self, z):
         """
         Decode latent z to image using VAE decoder (with grad).
         """
-        z= torch.permute(z, (0, 3, 1, 2))
+        # z= torch.permute(z, (0, 3, 1, 2))
         return self.vae.decode(z)

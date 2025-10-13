@@ -1,5 +1,6 @@
 import sys
 sys.path.append("../resample")
+from time import time
 from ldm_inverse.condition_methods import get_conditioning_method
 from shortcut_sampler import ShortcutSampler
 from shortcut_model import ShortcutModel
@@ -19,6 +20,12 @@ from ldm.util import instantiate_from_config
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from metrics import LPIPS, PSNR, SSIM
 
+def fmt_mmss(seconds) -> str:
+    # ensure non-negative integer seconds
+    total = int(max(0, int(seconds)))
+    m = total // 60
+    s = total % 60
+    return f"{m:02d}:{s:02d}"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model_config', default="shortcutmodel_args.yaml", type=str)
@@ -65,11 +72,11 @@ sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_c
                                         ddim_use_original_steps=True,
                                         batch_size=args.n_samples_per_class,
                                         shape=[4, 32, 32], # Dimension of latent space
-                                        verbose=True,
+                                        verbose=False,
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
                                         eta=args.ddim_eta,
-                                        only_dps=True)
+                                        only_dps=False)
 
 # Working directory
 if args.save_dir:
@@ -95,10 +102,14 @@ metrics = {"lpips": LPIPS(),
            "ssim": SSIM()}
 
 # Do inference
+tot_time = 0
+results = []
 for i, ref_img in enumerate(loader):
+    t0 = time()
 
     print(f"Inference for image {i}")
     fname = str(i).zfill(3)
+    results.append([fname])
     ref_img = ref_img.to(device)
 
     # Exception) In case of inpainting
@@ -119,7 +130,7 @@ for i, ref_img in enumerate(loader):
 
     # Sampling
     samples_ddim, _ = sample_fn(measurement=y_n)
-    
+    tot_time = tot_time + time() - t0
     x_samples_ddim = model.decode_first_stage(samples_ddim.detach())
 
     # Post-processing samples
@@ -135,15 +146,22 @@ for i, ref_img in enumerate(loader):
 
     psnr_cur = psnr(true, reconstructed)
     for met_name, metric in metrics.items():
-      metric(true, reconstructed)
-
+      score = metric(true, reconstructed)
+      results[-1].append(f"{score:.3f}")
+      
 for met_name, metric in metrics.items():
   print(f"{met_name}: {metric.mean}")
   
 if args.save_dir:
   with open(os.path.join(out_path, "metrics_results.csv"), "w") as f:
+    f.write(f"AvgSamplingTime,{fmt_mmss(tot_time/len(dataset))}\n")
     f.write(f"N,{len(dataset)}\n")
     for met_name, metric in metrics.items():
       f.write(f"{met_name},{metric.mean}\n")
+    names = [met_name for met_name in metrics]
+    f.write(",".join(names)+"\n")
+    for res in results:
+      f.write(",".join(res)+"\n")
+      
     
 

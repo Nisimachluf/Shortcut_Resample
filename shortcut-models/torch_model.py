@@ -91,7 +91,7 @@ class PatchEmbed(nn.Module):
         self.conv = nn.Conv2d(in_channels=in_channels, out_channels=hidden_size, kernel_size=patch_size, stride=patch_size, bias=bias)
     def forward(self, x):
         B, H, W, C = x.shape
-        x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
+        # x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
         x = self.conv(x)  # (B, hidden_size, H//patch, W//patch)
         x = x.flatten(2).transpose(1, 2)  # (B, num_patches, hidden_size)
         return x
@@ -212,8 +212,8 @@ class DiT(nn.Module):
     def forward(self, x, t, dt, y, train=False, return_activations=False):
         activations = {}
         batch_size = x.shape[0]
-        input_size = x.shape[1]
-        in_channels = x.shape[-1]
+        input_size = x.shape[-1]
+        in_channels = x.shape[1]
         num_patches = (input_size // self.patch_size) ** 2
         num_patches_side = input_size // self.patch_size
 
@@ -248,6 +248,7 @@ class DiT(nn.Module):
         x = x.view(batch_size, num_patches_side, num_patches_side, self.patch_size, self.patch_size, self.out_channels)
         x = x.permute(0, 1, 3, 2, 4, 5).contiguous()
         x = x.view(batch_size, input_size, input_size, self.out_channels)
+        x = x.permute(0, 3, 1, 2)
 
         t_discrete = torch.floor(t * 256).int()
         logvars = nn.Embedding(256, 1).to(self.device)
