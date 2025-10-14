@@ -1,6 +1,7 @@
 """SAMPLING ONLY."""
 
 import torch
+from time import time
 import numpy as np
 from tqdm import tqdm
 from functools import partial
@@ -17,7 +18,9 @@ class DDIMSampler(object):
         self.model = model
         self.ddpm_num_timesteps = model.num_timesteps
         self.schedule = schedule
-
+        self.optiming = {"pixel": 0,
+                         "latent": 0}
+        
     def register_buffer(self, name, attr):
         if type(attr) == torch.Tensor:
             if attr.device != torch.device("cuda"):
@@ -287,7 +290,7 @@ class DDIMSampler(object):
             # Instantiating time-travel parameters
             splits = 3 # TODO: make this not hard-coded
             index_split = total_steps // splits
-
+            
             # Performing time-travel if in selected indices
             if index <= (total_steps - index_split) and index > 0:   
                 x_t = img.detach().clone()
@@ -324,11 +327,11 @@ class DDIMSampler(object):
                         # Enforcing consistency via pixel-based optimization
                         pseudo_x0 = pseudo_x0.detach() 
                         pseudo_x0_pixel = self.model.decode_first_stage(pseudo_x0) # Get \hat{x}_0 into pixel space
-
+                        t0 = time()
                         opt_var = self.pixel_optimization(measurement=measurement, 
                                                           x_prime=pseudo_x0_pixel,
                                                           operator_fn=operator_fn)
-                        
+                        self.optiming["pixel"] += (time()-t0)
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
 
                         img = self.stochastic_resample(pseudo_x0=opt_var, x_t=x_t, a_t=a_prev, sigma=sigma)
@@ -338,9 +341,11 @@ class DDIMSampler(object):
                     elif index < index_split: # Needs to (possibly) be tuned
 
                         # Enforcing consistency via latent space optimization
+                        t0 = time()
                         pseudo_x0, _ = self.latent_optimization(measurement=measurement,
                                                              z_init=pseudo_x0.detach(),
                                                              operator_fn=operator_fn)
+                        self.optiming["latent"] += (time()-t0)
 
 
                         sigma = 40 * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task

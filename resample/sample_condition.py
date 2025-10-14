@@ -156,9 +156,13 @@ for i, ref_img in enumerate(loader):
       score = metric(true, reconstructed)
       results[-1].append(f"{score:.3f}")
 
+    for k, v in sampler.optiming.items():
+      v = v / (i+1)
+      print(f"Average {k} optimization time: {v:.2f} sec")
+    
 for met_name, metric in metrics.items():
   print(f"{met_name}: {metric.mean}")
-  
+
 if args.save_dir:
   with open(os.path.join(out_path, "metrics_results.csv"), "w") as f:
     f.write(f"AvgSamplingTime,{fmt_mmss(tot_time/len(dataset))}\n")

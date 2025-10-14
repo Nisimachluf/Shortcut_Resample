@@ -253,7 +253,7 @@ class ShortcutSampler(object):
         img = img.requires_grad_() # Require grad for data consistency
 
         if timesteps is None:
-            timesteps = 32 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+            timesteps = 64 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
             if verbose: print("got None timesteps {}".format(f"using default timesteps {timesteps}"))
 
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
@@ -625,11 +625,13 @@ class ShortcutSampler(object):
         num_classes = 1
         batch_size = x.shape[0]
         labels = torch.randint(0, num_classes, (batch_size,), device=self.model.device)
-        x_prev = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
-        steps, step_sizes = shortest_plan_to_end(t, denoising_timesteps)
-        pseudo_x0 = x_prev.clone()
-        for s, ss in zip(steps, step_sizes):
-            pseudo_x0 = denoising_step(self.model, pseudo_x0, s,ss, labels, 0, 1, self.model.device)
+        x_prev, pseudo_x0 = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
+        # x_prev = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
+        # steps, step_sizes = shortest_plan_to_end(t, denoising_timesteps)
+        # pseudo_x0 = x_prev.clone()
+        # for s, ss in zip(steps, step_sizes):
+        #     pseudo_x0 = denoising_step(self.model, pseudo_x0, s,ss, labels, 0, 1, self.model.device)
+        
         return x_prev, x_prev, pseudo_x0
         
 
