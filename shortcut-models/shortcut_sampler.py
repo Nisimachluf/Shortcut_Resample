@@ -253,7 +253,7 @@ class ShortcutSampler(object):
         img = img.requires_grad_() # Require grad for data consistency
 
         if timesteps is None:
-            timesteps = 64 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+            timesteps = 128 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
             if verbose: print("got None timesteps {}".format(f"using default timesteps {timesteps}"))
 
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
@@ -266,7 +266,7 @@ class ShortcutSampler(object):
         # betas = self.model.betas
         
         # schedule = list(zip(*build_step_schedule((32/128,16/128, 80/128, ), (4, 8, 64))))
-        schedule = list(zip(*build_step_schedule((1, ), (64,))))
+        schedule = list(zip(*build_step_schedule((1, ), (timesteps,))))
         iterator = tqdm(schedule, desc='Shortcut Sampler', total=len(schedule))
 
         # each of the time steps starting from the original ddpm number of steps, ddpm steps size
