@@ -6,6 +6,7 @@ from tqdm import tqdm
 from functools import partial
 from scripts.utils import *
 from helper_bp import blur_operator, blur_adjoint, laplacian
+
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, \
     extract_into_tensor
 from skimage.metrics import peak_signal_noise_ratio as psnr
@@ -270,7 +271,7 @@ class ShortcutSampler(object):
         iterator = tqdm(schedule, desc='Shortcut Sampler', total=len(schedule))
 
         # each of the time steps starting from the original ddpm number of steps, ddpm steps size
-        # x_t = (1-t)x_0 + 
+        # x_t = (1-t)x_0 + tx_1
         for i, (step, dts) in enumerate(iterator):
             # a_t is the fractional path in [0, 1] from pure noise(0) to real image (1)
             t = ShortcutSampler.calc_a_t(step, dts)
