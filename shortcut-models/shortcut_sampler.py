@@ -5,6 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from functools import partial
 from scripts.utils import *
+from helper_bp import blur_operator, blur_adjoint, laplacian
 
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, \
     extract_into_tensor
@@ -361,10 +362,13 @@ class ShortcutSampler(object):
                         pseudo_x0 = pseudo_x0.detach() 
                         pseudo_x0_pixel = self.model.decode_first_stage(pseudo_x0) # Get \hat{x}_0 into pixel space
 
-                        opt_var = self.pixel_optimization(measurement=measurement, 
-                                                          x_prime=pseudo_x0_pixel,
-                                                          operator_fn=operator_fn,
-                                                             verbose=verbose)
+                        # opt_var = self.pixel_optimization(measurement=measurement, 
+                        #                                   x_prime=pseudo_x0_pixel,
+                        #                                   operator_fn=operator_fn,
+                        #                                      verbose=verbose)
+
+                        opt_var = self.iterative_bp_with_reg(measurement=measurement, 
+                                                          x_prime=pseudo_x0_pixel)
                         
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
 
@@ -439,6 +443,32 @@ class ShortcutSampler(object):
         if verbose and not stopped:
             print(f"Pixel optimization reached max iterations ({max_iters}), last loss {measurement_loss:.3e} (eps={(eps**2):.3e})")
         return opt_var
+    
+    def iterative_bp_with_reg(self, measurement, x_prime, lam=1.0, alpha=0.1, n_steps=5):
+        """
+        Iterative back-projection with optional L2 regularization toward x_prime
+        
+        Args:
+            y: measurement [B, C, H, W] (blurred + noisy image)
+            x_prime: initial estimate from Shortcut model
+            kernel: Gaussian kernel for blur
+            lam: back-projection step size
+            alpha: regularization strength toward x_prime
+            n_steps: number of iterations
+        """
+        # residual = measurement - blur_operator(x_prime)
+        # correction = blur_adjoint(residual)
+        # x = x_prime + lam * correction
+        
+        x = x_prime.clone()
+        for _ in range(n_steps):
+            residual = measurement - blur_operator(x)
+            correction = blur_adjoint(residual)
+            reg_term_1 = x - x_prime #L2 regularization gradient
+            # reg_term_2 = laplacian(x)
+            # x = x + lam * correction - alpha * (0.2 * reg_term_1 + 0.8 * reg_term_2)
+            x = x + lam * correction - alpha * reg_term_1
+        return x
 
 
     def latent_optimization(self, measurement, z_init, operator_fn, eps=1e-3, max_iters=500, lr=None, verbose=False):
@@ -624,6 +654,7 @@ class ShortcutSampler(object):
     def p_sample_shortcut(self, x, t, denoising_timesteps, verbose=False):
         num_classes = 1
         batch_size = x.shape[0]
+        beta=0.9
         labels = torch.randint(0, num_classes, (batch_size,), device=self.model.device)
         x_prev, pseudo_x0 = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
         # x_prev = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)

@@ -15,4 +15,5 @@ shortcut-models/notebooks/.ipynb_checkpoints
 **egg-info**
 **/__pycache__
 datasets
+launch.json
 data

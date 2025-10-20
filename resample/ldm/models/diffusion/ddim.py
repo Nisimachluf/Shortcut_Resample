@@ -9,6 +9,7 @@ from scripts.utils import *
 
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, \
     extract_into_tensor
+from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from scripts.utils import clear_color
 
@@ -471,6 +472,8 @@ class DDIMSampler(object):
         Function to resample x_t based on ReSample paper.
         """
         device = self.model.betas.device
+        if isinstance(pseudo_x0, DiagonalGaussianDistribution):
+            pseudo_x0 = pseudo_x0.sample()
         noise = torch.randn_like(pseudo_x0, device=device)
         return (sigma * a_t.sqrt() * pseudo_x0 + (1 - a_t) * x_t)/(sigma + 1 - a_t) + noise * torch.sqrt(1/(1/sigma + 1/(1-a_t)))
 
