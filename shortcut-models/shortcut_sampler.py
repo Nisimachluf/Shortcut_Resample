@@ -1,11 +1,13 @@
 """SAMPLING ONLY."""
 
 import torch
+import torch.fft as fft
+import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 from functools import partial
 from scripts.utils import *
-from helper_bp import blur_operator, blur_adjoint, laplacian
+from helper_bp import A, A_adjoint, gaussian_kernel
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, \
     extract_into_tensor
 from skimage.metrics import peak_signal_noise_ratio as psnr
@@ -245,15 +247,18 @@ class ShortcutSampler(object):
         gamma = 1
         device = self.model.device
         b = shape[0]
+        kernel = gaussian_kernel()
         if x_T is None:
-            img = torch.randn(shape, device=device)
+            noise = torch.randn(shape, device=device)
+            img = self.generate_x0_warm(measurement, noise, kernel)
+            # img=noise
         else:
             img = x_T
         
         img = img.requires_grad_() # Require grad for data consistency
 
         if timesteps is None:
-            timesteps = 64 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+            timesteps = 32 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
             if verbose: print("got None timesteps {}".format(f"using default timesteps {timesteps}"))
 
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
@@ -266,11 +271,13 @@ class ShortcutSampler(object):
         # betas = self.model.betas
         
         # schedule = list(zip(*build_step_schedule((32/128,16/128, 80/128, ), (4, 8, 64))))
-        schedule = list(zip(*build_step_schedule((1, ), (64,))))
+        schedule = list(zip(*build_step_schedule((1, ), (timesteps,))))
         iterator = tqdm(schedule, desc='Shortcut Sampler', total=len(schedule))
 
         # each of the time steps starting from the original ddpm number of steps, ddpm steps size
         # x_t = (1-t)x_0 + 
+        kernel = gaussian_kernel()
+
         for i, (step, dts) in enumerate(iterator):
             # a_t is the fractional path in [0, 1] from pure noise(0) to real image (1)
             t = ShortcutSampler.calc_a_t(step, dts)
@@ -366,12 +373,15 @@ class ShortcutSampler(object):
                         #                                   operator_fn=operator_fn,
                         #                                      verbose=verbose)
 
-                        opt_var = self.iterative_bp_with_reg(measurement=measurement, 
-                                                          x_prime=pseudo_x0_pixel)
+                        # opt_var = self.iterative_bp_with_reg(measurement=measurement, 
+                        #                                   x_prime=pseudo_x0_pixel)
+
+                        opt_var = self.solve_bp_fft_operator(y=measurement, x0=pseudo_x0_pixel,kernel=kernel)
                         
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
 
                         img = self.stochastic_resample(pseudo_x0=opt_var, x_t=x_t, a_t=a_prev, sigma=sigma)
+                        # img = self.flow_matching_noise_injection(x0_y=opt_var,t_n=a_prev)
                         img = img.requires_grad_() # Seems to need to require grad here
 
                     # Latent-based optimization for third stage
@@ -386,7 +396,8 @@ class ShortcutSampler(object):
 
                         sigma = gamma * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task
 
-                        img = self.stochastic_resample(pseudo_x0=pseudo_x0, x_t=x_t, a_t=a_prev, sigma=sigma) 
+                        img = self.stochastic_resample(pseudo_x0=pseudo_x0, x_t=x_t, a_t=a_prev, sigma=sigma)
+                        # img = self.flow_matching_noise_injection(x0_y=opt_var,t_n=a_prev)
 
             # Callback functions if needed
             if callback: callback(i)
@@ -443,31 +454,104 @@ class ShortcutSampler(object):
             print(f"Pixel optimization reached max iterations ({max_iters}), last loss {measurement_loss:.3e} (eps={(eps**2):.3e})")
         return opt_var
     
-    def iterative_bp_with_reg(self, measurement, x_prime, lam=1.0, alpha=0.1, n_steps=5):
-        """
-        Iterative back-projection with optional L2 regularization toward x_prime
+    
+    # def iterative_bp_with_reg(self, measurement, x_prime, lam=1.0, alpha=0.1, n_steps=4):
+    #     """
+    #     Single-step back-projection with optional L2 regularization toward x_prime.
         
+    #     Args:
+    #         measurement: [B, C, H, W]  - observed measurement (blurred + noisy)
+    #         x_prime:     [B, C, H, W]  - current estimate (e.g. from Shortcut)
+    #         A:           function       - forward operator (e.g., blur)
+    #         A_adjoint:   function       - adjoint of A
+    #         lam:         float          - back-projection step size
+    #         alpha:       float          - L2 regularization strength toward x_prime
+    #     """
+    # # Computsidual = measurement - blur_operator(x_prime)
+    #     # correction = blur_adjoint(residual)
+    #     # x = x_prime + lam * correction
+        
+    #     residual = measurement - blur_operator(x) #
+    #     A_adjoint = blur_adjoint(A)
+    #     reg_term_1 = x - x_prime #L2 regularization gradient
+    #     # reg_term_2 = laplacian(x)
+    #     # x = x + lam * correction - alpha * (0.2 * reg_term_1 + 0.8 * reg_term_2)
+    #     # x = x + lam * correction - alpha * reg_term_1
+    #     x = A
+    #     return x
+
+    def generate_x0_warm(self, y, x0, kernel, sigma=0.9, d=0.7, device='cuda'):
+        """
+        Generate a warm-start x0|y for Shortcut latent flow with a weighted 'big jump' start.
+
         Args:
-            y: measurement [B, C, H, W] (blurred + noisy image)
-            x_prime: initial estimate from Shortcut model
-            kernel: Gaussian kernel for blur
-            lam: back-projection step size
-            alpha: regularization strength toward x_prime
-            n_steps: number of iterations
+            y: torch.Tensor, the measurement or input image
+            x0: initial guess (optional, can be zeros)
+            kernel: your forward operator kernel
+            sigma: float, noise level to add on top of x_hat
+            d: float in [0,1], mixing factor between pure noise and x0|y
+            device: str, device to put the tensor on
+
+        Returns:
+            x0_warm: torch.Tensor, warm initialization for the sampler
         """
-        # residual = measurement - blur_operator(x_prime)
-        # correction = blur_adjoint(residual)
-        # x = x_prime + lam * correction
-        
-        x = x_prime.clone()
-        for _ in range(n_steps):
-            residual = measurement - blur_operator(x)
-            correction = blur_adjoint(residual)
-            reg_term_1 = x - x_prime #L2 regularization gradient
-            # reg_term_2 = laplacian(x)
-            # x = x + lam * correction - alpha * (0.2 * reg_term_1 + 0.8 * reg_term_2)
-            x = x + lam * correction - alpha * reg_term_1
-        return x
+        with torch.no_grad():
+            # Solve back-projection to get x0|y
+            x0_pixel_prior = self.model.differentiable_decode_first_stage(x0)
+            x_hat_pixel = self.solve_bp_fft_operator(y, x0_pixel_prior, kernel)  # [B, C, H, W]
+            x_hat_latent = self.model.encode_first_stage(x_hat_pixel) 
+            x_hat_latent = x_hat_latent.to(device)
+
+            # Generate random Gaussian noise
+            noise_latent = torch.randn_like(x_hat_latent) * sigma
+
+            # Weighted combination: "big jump" start
+            x0_warm = (1 - d) * x_hat_latent + d * noise_latent
+
+        return x0_warm
+
+
+    def solve_bp_fft_operator(self, y, x0, kernel, rho=1.0, eps=1e-12):
+        """ 
+        let k be the kernel
+        A^T be the adjoint of A, K^* be the adjoint in frequency domain
+        for rho >0, bp closed form is : x = (A^T A + rho I)^-1 (A^T y+ rho  x0)
+        A is convolution operator with kernel k, we get:
+
+        In pixel space:
+        A^T A x = (x * k) * k^T
+        A^Ty = y *k^T                                         # convolution with flipped kernel
+
+        In frequency domain: convolution becomes multiplication:
+        F{Ay} = F{k^T * y} = K^* ⋅ Y
+        F{A^TAx} = F{(X*K) * k^T} = (X*k) * K^* = X * |K|^2
+        so our solution is:
+        X =K^* ⋅ Y + rho X0 / (|K|^2 + rho)
+        """
+
+        B, C, H, W = y.shape
+        # pad kernel to image size
+        kh, kw = kernel.shape[-2:]
+        kernel_padded = F.pad(kernel, (0, W - kw, 0, H - kh))
+        if kernel_padded.shape[0] == 1 and C > 1:
+            kernel_padded = kernel_padded.repeat(C,1,1,1)
+
+        if not hasattr(self, 'k_f_cache') or self.k_f_cache.shape[-2:] != (H, W//2 + 1):
+            k_f = fft.rfft2(kernel_padded.reshape(C, H, W))
+            self.k_f_cache = k_f
+        else:
+            k_f = self.k_f_cache
+        y_f = fft.rfft2(y.reshape(B*C,H,W))
+        x0_f = fft.rfft2(x0.reshape(B*C,H,W))
+        k_f = k_f.repeat(B, 1, 1).reshape(B*C, H, W//2 + 1)
+
+        numerator = torch.conj(k_f)*y_f + rho*x0_f
+        denominator = (k_f.abs()**2) + rho  + eps
+        x_f = numerator / denominator
+        # x = fft.ifft2(x_f).real
+        x = fft.irfft2(x_f, s=(H, W))
+        return x.reshape(B,C,H,W)
+
 
 
     def latent_optimization(self, measurement, z_init, operator_fn, eps=1e-3, max_iters=500, lr=None, verbose=False):
@@ -656,11 +740,6 @@ class ShortcutSampler(object):
         beta=0.9
         labels = torch.randint(0, num_classes, (batch_size,), device=self.model.device)
         x_prev, pseudo_x0 = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
-        # x_prev = denoising_step(self.model, x, t, denoising_timesteps, labels, 0, 1, self.model.device)
-        # steps, step_sizes = shortest_plan_to_end(t, denoising_timesteps)
-        # pseudo_x0 = x_prev.clone()
-        # for s, ss in zip(steps, step_sizes):
-        #     pseudo_x0 = denoising_step(self.model, pseudo_x0, s,ss, labels, 0, 1, self.model.device)
         
         return x_prev, x_prev, pseudo_x0
         
@@ -722,6 +801,26 @@ class ShortcutSampler(object):
                                           unconditional_guidance_scale=unconditional_guidance_scale,
                                           unconditional_conditioning=unconditional_conditioning)
         return x_dec
+    
+
+    def flow_matching_noise_injection(self, x0_y, t_n):
+        """
+        PnP-Flow style noise injection.
+        
+        Args:
+            x0_y: measurement-informed estimate of x_0 (x_0|y)
+            x_t: current latent
+            sigma_noise: optional noise scale; if None, uses default schedule
+        Returns:
+            x_prev: resampled latent with flow-matching noise
+        """
+        device = self.model.device
+        noise = torch.randn_like(x0_y, device=device)
+
+        z_tilde_n = (1.0 - t_n) * noise + t_n * x0_y
+        
+        return z_tilde_n
+
 
 
                
