@@ -1,0 +1,26 @@
+-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+chex
+diffusers
+einops
+flax
+imageio
+jax==0.4.23
+jaxlib==0.4.23+cuda12.cudnn89
+jaxtyping==0.3.2
+ml_collections==1.1.0
+numba
+numpy==1.25.2
+opt_einsum==3.4.0
+optax
+orbax
+orbax-checkpoint
+protobuf
+tabulate
+tensorflow-cpu
+tensorflow-datasets
+tensorflow-probability
+torch==2.8.0
+typeguard
+wandb
+scikit-image

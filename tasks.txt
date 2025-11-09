@@ -1,0 +1,5 @@
+1) calc z0 by making a step directly with 1-t instead of t
+2) replace pixel optimization with closed form solution with reg
+3) profile pixel and latent optimizations
+4) consider mumentum 
+5) Inspect leveraging varying step sizes 

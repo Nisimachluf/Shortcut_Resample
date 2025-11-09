@@ -278,6 +278,7 @@ class ShortcutSampler(object):
         # x_t = (1-t)x_0 + 
         kernel = gaussian_kernel()
 
+        # x_t = (1-t)x_0 + tx_1
         for i, (step, dts) in enumerate(iterator):
             # a_t is the fractional path in [0, 1] from pure noise(0) to real image (1)
             t = ShortcutSampler.calc_a_t(step, dts)
@@ -801,26 +802,6 @@ class ShortcutSampler(object):
                                           unconditional_guidance_scale=unconditional_guidance_scale,
                                           unconditional_conditioning=unconditional_conditioning)
         return x_dec
-    
-
-    def flow_matching_noise_injection(self, x0_y, t_n):
-        """
-        PnP-Flow style noise injection.
-        
-        Args:
-            x0_y: measurement-informed estimate of x_0 (x_0|y)
-            x_t: current latent
-            sigma_noise: optional noise scale; if None, uses default schedule
-        Returns:
-            x_prev: resampled latent with flow-matching noise
-        """
-        device = self.model.device
-        noise = torch.randn_like(x0_y, device=device)
-
-        z_tilde_n = (1.0 - t_n) * noise + t_n * x0_y
-        
-        return z_tilde_n
-
 
 
                

@@ -1,6 +1,7 @@
 """SAMPLING ONLY."""
 
 import torch
+from time import time
 import numpy as np
 from tqdm import tqdm
 from functools import partial
@@ -18,7 +19,9 @@ class DDIMSampler(object):
         self.model = model
         self.ddpm_num_timesteps = model.num_timesteps
         self.schedule = schedule
-
+        self.optiming = {"pixel": 0,
+                         "latent": 0}
+        
     def register_buffer(self, name, attr):
         if type(attr) == torch.Tensor:
             if attr.device != torch.device("cuda"):
@@ -26,6 +29,7 @@ class DDIMSampler(object):
         setattr(self, name, attr)
 
     def make_schedule(self, ddim_num_steps, ddim_discretize="uniform", ddim_eta=0., verbose=True):
+        if verbose: print("Generating schedule:")
         self.ddim_timesteps = make_ddim_timesteps(ddim_discr_method=ddim_discretize, num_ddim_timesteps=ddim_num_steps,
                                                   num_ddpm_timesteps=self.ddpm_num_timesteps,verbose=verbose)
         alphas_cumprod = self.model.alphas_cumprod
@@ -141,6 +145,7 @@ class DDIMSampler(object):
                log_every_t=100,
                unconditional_guidance_scale=1.,
                unconditional_conditioning=None,
+               only_dps=False,
                # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
                **kwargs
                ):
@@ -179,6 +184,8 @@ class DDIMSampler(object):
                                                         log_every_t=log_every_t,
                                                         unconditional_guidance_scale=unconditional_guidance_scale,
                                                         unconditional_conditioning=unconditional_conditioning,
+                                                        verbose=verbose,
+                                                        only_dps=only_dps
                                                         )
             
         else:
@@ -192,7 +199,7 @@ class DDIMSampler(object):
                      callback=None, timesteps=None, quantize_denoised=False,
                      mask=None, x0=None, img_callback=None, log_every_t=100,
                      temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
-                     unconditional_guidance_scale=1., unconditional_conditioning=None,):
+                     unconditional_guidance_scale=1., unconditional_conditioning=None,verbose=False, only_dps=False):
         """
         DDIM-based sampling function for ReSample.
 
@@ -216,14 +223,16 @@ class DDIMSampler(object):
 
         if timesteps is None:
             timesteps = self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+            if verbose: print("got None timesteps {}".format(f"using original ddpm num timesteps {timesteps}" if ddim_use_original_steps else f"using calculated timesteps (of len {len(timesteps)})"))
+            
         elif timesteps is not None and not ddim_use_original_steps:
             subset_end = int(min(timesteps / self.ddim_timesteps.shape[0], 1) * self.ddim_timesteps.shape[0]) - 1
             timesteps = self.ddim_timesteps[:subset_end]
 
-        intermediates = {'x_inter': [img], 'pred_x0': [img]}
+        intermediates = {'x_inter': [img], 'pred_x0': [img], "pseudo_x0": []}
+        # flip the timesteps to count backward
         time_range = reversed(range(0,timesteps)) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
-
         # Need for measurement consistency
         alphas = self.model.alphas_cumprod if ddim_use_original_steps else self.ddim_alphas 
         alphas_prev = self.model.alphas_cumprod_prev if ddim_use_original_steps else self.ddim_alphas_prev
@@ -231,59 +240,81 @@ class DDIMSampler(object):
 
         iterator = tqdm(time_range, desc='DDIM Sampler', total=total_steps)
 
-        for i, step in enumerate(iterator):        
+        # each of the time steps starting from the original ddpm number of steps, ddpm steps size
+        for i, step in enumerate(iterator):
+            # i counts from 0 to 499 (the number of ddim steps)        
             # Instantiating parameters
-            index = total_steps - i - 1
-            ts = torch.full((b,), step, device=device, dtype=torch.long)
+            index = total_steps - i - 1 #index the actual ddim steps, backwards
+            ts = torch.full((b,), step, device=device, dtype=torch.long) # batch size of current time step
             a_t = torch.full((b, 1, 1, 1), alphas[index], device=device, requires_grad=False) # Needed for ReSampling
             a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device, requires_grad=False) # Needed for ReSampling
             b_t = torch.full((b, 1, 1, 1), betas[index], device=device, requires_grad=False)            
 
             if mask is not None:
+                if verbose: print("Masking img")
                 assert x0 is not None
                 img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
                 img = img_orig * mask + (1. - mask) * img
-
+            else:
+                if verbose: print("Not using mask")
+            
             # Unconditional sampling step
             # pred_x0 is from DDIM, pseudo_x0 is computing \hat{x}_0 using Tweedie's formula
+            # returns:
+            # x_prev - the prediction of x_{t-1}
+            # pred_x0, - estimation of x0 using (x_t-\sqrt(1-at)e(x_t, t))/a_t
+            # pseudo_x0 - estimation of x0 using (x_t-(1-at)e(x_t, t))/a_t
+            if verbose: print(f"Runnign DDIM sampling with t={ts.item()}, index={index}")
             out, pred_x0, pseudo_x0 = self.p_sample_ddim(img, cond, ts, index=index, use_original_steps=ddim_use_original_steps,
                                       quantize_denoised=quantize_denoised, temperature=temperature,
                                       noise_dropout=noise_dropout, score_corrector=score_corrector,
                                       corrector_kwargs=corrector_kwargs,
                                       unconditional_guidance_scale=unconditional_guidance_scale,
-                                      unconditional_conditioning=unconditional_conditioning)
-
-            img, _ = measurement_cond_fn(x_t=out, # x_t is x_{t-1}
-                                            measurement=measurement,
-                                            noisy_measurement=measurement,
+                                      unconditional_conditioning=unconditional_conditioning, verbose=verbose)
+            if index % log_every_t == 0:
+                intermediates['pseudo_x0'].append(pseudo_x0)
+            # Conditioning step 
+            if verbose: print(f"Running DPS conditioning with LR={(a_t*.5).item():.3f}")
+            img, _ = measurement_cond_fn(
                                             x_prev=img, # x_prev is x_t
+                                            x_t=out, # x_t is x_{t-1}
                                             x_0_hat=pseudo_x0,
+                                            measurement=measurement, # thats the noise sample
                                             scale=a_t*.5, # For DPS learning rate / scale
+                                            noisy_measurement=measurement, #not used in DPS contioning
+                                            verbose=verbose
                                             )
+            
+            if only_dps:
+                continue
             
             # Instantiating time-travel parameters
             splits = 3 # TODO: make this not hard-coded
             index_split = total_steps // splits
-
+            
             # Performing time-travel if in selected indices
             if index <= (total_steps - index_split) and index > 0:   
                 x_t = img.detach().clone()
 
                 # Performing only every 10 steps (or so)
                 # TODO: also make this not hard-coded
-                if index % 10 == 0 :  
+                if index % 10 == 0 :
+                    if verbose: print(f"Index = {index}")
+                    if verbose: print(f"Iterating over  = {list(range(i, min(i+inter_timesteps, len(list( reversed(timesteps) ))-1)))}")
                     for k in range(i, min(i+inter_timesteps, len(list( reversed(timesteps) ))-1)):
                         step_ = list( reversed(timesteps))[k+1]
                         ts_ = torch.full((b,), step_, device=device, dtype=torch.long)
                         index_ = total_steps - k - 1
-
+                        if verbose: print(f"Trio: step_={step_.item()}, ts_={ts_.item()}, index_={index_}")
                         # Obtain x_{t-k}
+                        if verbose: print(f"Runnign DDIM sampling with t={ts_.item()}, index={index_}")
                         img, pred_x0, pseudo_x0 = self.p_sample_ddim(img, cond, ts_, index=index_, use_original_steps=ddim_use_original_steps,
                                             quantize_denoised=quantize_denoised, temperature=temperature,
                                             noise_dropout=noise_dropout, score_corrector=score_corrector,
                                             corrector_kwargs=corrector_kwargs,
                                             unconditional_guidance_scale=unconditional_guidance_scale,
-                                            unconditional_conditioning=unconditional_conditioning)
+                                            unconditional_conditioning=unconditional_conditioning,
+                                            verbose=verbose)
                         
                     # Some arbitrary scheduling for sigma
                     if index >= 0:
@@ -297,11 +328,11 @@ class DDIMSampler(object):
                         # Enforcing consistency via pixel-based optimization
                         pseudo_x0 = pseudo_x0.detach() 
                         pseudo_x0_pixel = self.model.decode_first_stage(pseudo_x0) # Get \hat{x}_0 into pixel space
-
+                        t0 = time()
                         opt_var = self.pixel_optimization(measurement=measurement, 
                                                           x_prime=pseudo_x0_pixel,
                                                           operator_fn=operator_fn)
-                        
+                        self.optiming["pixel"] += (time()-t0)
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
 
                         img = self.stochastic_resample(pseudo_x0=opt_var, x_t=x_t, a_t=a_prev, sigma=sigma)
@@ -311,9 +342,11 @@ class DDIMSampler(object):
                     elif index < index_split: # Needs to (possibly) be tuned
 
                         # Enforcing consistency via latent space optimization
+                        t0 = time()
                         pseudo_x0, _ = self.latent_optimization(measurement=measurement,
                                                              z_init=pseudo_x0.detach(),
                                                              operator_fn=operator_fn)
+                        self.optiming["latent"] += (time()-t0)
 
 
                         sigma = 40 * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task
@@ -326,11 +359,12 @@ class DDIMSampler(object):
             if index % log_every_t == 0 or index == total_steps - 1:
                 intermediates['x_inter'].append(img)
                 intermediates['pred_x0'].append(pred_x0)       
-                
-        psuedo_x0, _ = self.latent_optimization(measurement=measurement,
+        
+        if not only_dps:  
+            psuedo_x0, _ = self.latent_optimization(measurement=measurement,
                                                              z_init=img.detach(),
                                                              operator_fn=operator_fn)
-        img = psuedo_x0.detach().clone()
+            img = psuedo_x0.detach().clone()
             
         return img, intermediates
 
@@ -502,12 +536,15 @@ class DDIMSampler(object):
 
     def p_sample_ddim(self, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
-                      unconditional_guidance_scale=1., unconditional_conditioning=None):
+                      unconditional_guidance_scale=1., unconditional_conditioning=None, verbose=False):
+        if verbose: print("Running p_sample_ddim")
         b, *_, device = *x.shape, x.device
 
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
+            if verbose: print(f"Using unconditional ddim sampling (x={x.shape}, t={t.item()}, c={c})")
             e_t = self.model.apply_model(x, t, c)
         else:
+            if verbose: print(f"Unconditional Conditioning: {unconditional_conditioning}, unconditional_guidance_scale: {unconditional_guidance_scale}")
             x_in = torch.cat([x] * 2)
             t_in = torch.cat([t] * 2)
             c_in = torch.cat([unconditional_conditioning, c])
@@ -528,7 +565,7 @@ class DDIMSampler(object):
         a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device)
         sigma_t = torch.full((b, 1, 1, 1), sigmas[index], device=device)
         sqrt_one_minus_at = torch.full((b, 1, 1, 1), sqrt_one_minus_alphas[index],device=device)
-
+        if verbose: print(f"a_t={a_t.item():.3f}, a_pred={a_prev.item():.3f}, sigma_t={sigma_t.item():.3f}")
         # current prediction for x_0
         pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
         if quantize_denoised:
@@ -536,6 +573,7 @@ class DDIMSampler(object):
         # direction pointing to x_t
         dir_xt = (1. - a_prev - sigma_t**2).sqrt() * e_t
         noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature
+        
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
