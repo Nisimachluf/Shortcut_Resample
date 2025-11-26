@@ -76,11 +76,13 @@ sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_c
                                         unconditional_guidance_scale=args.ddim_scale,
                                         unconditional_conditioning=None, 
                                         eta=args.ddim_eta,
-                                        only_dps=False)
+                                        only_dps=False,
+                                        timesteps=args.shortcut_steps)
 
 # Working directory
 if args.save_dir:
   out_path = os.path.join(args.save_dir)
+  out_path = "{}_{}steps".format(out_path, args.shortcut_steps)
   os.makedirs(out_path, exist_ok=True)
   for img_dir in ['input', 'recon', 'progress', 'label']:
       os.makedirs(os.path.join(out_path, img_dir), exist_ok=True)

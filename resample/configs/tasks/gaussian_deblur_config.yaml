@@ -6,7 +6,7 @@ conditioning:
 
 data:
   name: celeb
-  root: ./data/coco/
+  root: /media/embedded/Datasets/Public/CelebAhq256
 
 measurement:
   operator:

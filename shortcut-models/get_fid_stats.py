@@ -9,24 +9,42 @@ def main():
 
     # Load CelebA-HQ256 dataset
     batch_size = 64
-    num_images = 512
-    dataset = get_dataset('celebahq256', batch_size, is_train=False)
-    images = []
-
-    # Collect images
-    while len(images) * batch_size < num_images:
+    num_images = 10000
+    dataset = get_dataset('celebahq256', batch_size, is_train=True)
+    
+    # Process batches incrementally to avoid OOM
+    all_acts = []
+    num_batches = (num_images + batch_size - 1) // batch_size
+    images_processed = 0
+    
+    print(f"Processing {num_images} images in {num_batches} batches of {batch_size}...")
+    
+    for batch_idx in range(num_batches):
+        # Get next batch
         batch_images, _ = next(dataset)
-        images.append(batch_images)
-    images = np.concatenate(images, axis=0)[:num_images]  # shape: (512, H, W, C)
-    print(images.shape)
-    # Apply FID network
-    acts = get_fid_activations(images)
-    print(acts.shape)
-    # If output shape is [B, 1, 1, D], squeeze spatial dims
-    if acts.ndim == 4 and acts.shape[1:3] == (1, 1):
-        acts = acts[..., 0, 0, :] if acts.shape[-1] == 2048 else acts.squeeze((1,2))
-    acts = np.array(acts)  # shape: (512, D)
-
+        
+        # Handle last batch (may be smaller)
+        remaining = num_images - images_processed
+        if remaining < batch_size:
+            batch_images = batch_images[:remaining]
+        
+        # Apply FID network to this batch
+        batch_acts = get_fid_activations(batch_images)
+        
+        # If output shape is [B, 1, 1, D], squeeze spatial dims
+        if batch_acts.ndim == 4 and batch_acts.shape[1:3] == (1, 1):
+            batch_acts = batch_acts[..., 0, 0, :] if batch_acts.shape[-1] == 2048 else batch_acts.squeeze((1, 2))
+        
+        batch_acts = np.array(batch_acts)
+        all_acts.append(batch_acts)
+        
+        images_processed += len(batch_images)
+        print(f"Processed batch {batch_idx + 1}/{num_batches} ({images_processed}/{num_images} images)")
+    
+    # Concatenate all activations
+    acts = np.concatenate(all_acts, axis=0)  # shape: (num_images, D)
+    print(f"Final activations shape: {acts.shape}")
+    
     # Compute mean and covariance
     mu = np.mean(acts, axis=0)
     sigma = np.cov(acts, rowvar=False)
@@ -34,8 +52,8 @@ def main():
     # Store and save
     fid_stats = {"mu": mu, "sigma": sigma}
     os.makedirs("results", exist_ok=True)
-    np.savez("results/celebahq256_fid_stats.npz", mu=mu, sigma=sigma)
-    print("Saved FID stats to results/celebahq256_fid_stats.npz")
+    np.savez("results/celebahq256_fid_stats_10K_samples.npz", mu=mu, sigma=sigma)
+    print("Saved FID stats to results/celebahq256_fid_stats_10K_samples.npz")
 
 if __name__ == "__main__":
     main()

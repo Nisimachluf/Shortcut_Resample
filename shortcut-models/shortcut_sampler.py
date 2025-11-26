@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 from functools import partial
 from scripts.utils import *
-from helper_bp import A, A_adjoint, gaussian_kernel
+from helper_bp import gaussian_kernel
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, \
     extract_into_tensor
 from skimage.metrics import peak_signal_noise_ratio as psnr
@@ -172,6 +172,7 @@ class ShortcutSampler(object):
                unconditional_guidance_scale=1.,
                unconditional_conditioning=None,
                only_dps=False,
+               timesteps=128,
                # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
                **kwargs
                ):
@@ -197,6 +198,7 @@ class ShortcutSampler(object):
             samples, intermediates = self.resample_sampling(measurement, measurement_cond_fn,
                                                     conditioning, size,
                                                         operator_fn=operator_fn,
+                                                        timesteps=timesteps,
                                                         callback=callback,
                                                         img_callback=img_callback,
                                                         quantize_denoised=quantize_x0,

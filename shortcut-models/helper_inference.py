@@ -149,6 +149,7 @@ def do_inference(
                 sigma1 = np.cov(activations, rowvar=False)
                 fid = fid_from_stats(mu1, sigma1, truth_fid_stats['mu'], truth_fid_stats['sigma'])
                 if FLAGS.save_dir is not None:
+                    os.makedirs(FLAGS.save_dir, exist_ok=True)
                     np.savez(f"{FLAGS.save_dir}/fid_stats.npz", mu=mu1, sigma=sigma1)
                 
                 print(f"FID is {fid}")
