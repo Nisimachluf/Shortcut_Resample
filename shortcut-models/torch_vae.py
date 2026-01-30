@@ -16,12 +16,11 @@ class Downsample2D(nn.Module):
 class Upsample2D(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=0)
+        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
         x = F.interpolate(x, scale_factor=2, mode="nearest")
-        # Apply asymmetric padding to match Flax implementation
-        x = F.pad(x, (0, 1, 0, 1), mode='constant', value=0)
+        # Flax uses symmetric padding for upsample
         return self.conv(x)
 
 class ResnetBlock2D(nn.Module):
