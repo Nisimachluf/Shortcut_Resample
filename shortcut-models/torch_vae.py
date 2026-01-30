@@ -5,19 +5,23 @@ import torch.nn.functional as F
 class Downsample2D(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=1)
+        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=0)
 
     def forward(self, x):
-        # Flax pads before downsampling, PyTorch Conv2d with padding=1 is equivalent for stride=2
+        # Flax uses asymmetric padding (0, 1, 0, 1) before downsampling
+        # This matches the Stable Diffusion VAE implementation
+        x = F.pad(x, (0, 1, 0, 1), mode='constant', value=0)
         return self.conv(x)
 
 class Upsample2D(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
+        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=0)
 
     def forward(self, x):
         x = F.interpolate(x, scale_factor=2, mode="nearest")
+        # Apply asymmetric padding to match Flax implementation
+        x = F.pad(x, (0, 1, 0, 1), mode='constant', value=0)
         return self.conv(x)
 
 class ResnetBlock2D(nn.Module):
@@ -60,7 +64,7 @@ class AttentionBlock(nn.Module):
         self.proj_attn = nn.Linear(channels, channels)
 
     def forward(self, x):
-        B, C, H, W = x.shape
+        B, C, H, W = x.shape    
         residual = x
         x = self.group_norm(x)
         x = x.permute(0, 2, 3, 1).reshape(B, H * W, C)

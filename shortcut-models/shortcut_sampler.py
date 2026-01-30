@@ -263,7 +263,7 @@ class ShortcutSampler(object):
             timesteps = 32 # self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
             if verbose: print("got None timesteps {}".format(f"using default timesteps {timesteps}"))
 
-        intermediates = {'x_inter': [img], 'pred_x0': [img]}
+        intermediates = {'x_inter': [img], 'pred_x0': [img], "x_opt": []}
         # flip the timesteps to count backward
         time_range = reversed(range(0,timesteps))
         total_steps = timesteps
@@ -313,7 +313,8 @@ class ShortcutSampler(object):
             # pseudo_x0 - estimation of x0 using (x_t-(1-at)e(x_t, t))/a_t
             if verbose: print(f"Runnign shortcut sampling with {step}/{dts}")
             out, pred_x0, pseudo_x0 = self.p_sample_shortcut(img, step, dts, verbose=verbose)
-            
+            if i % log_every_t == 0 or i == total_steps - 1:
+                intermediates['pred_x0'].append(pseudo_x0.clone())    
             # Conditioning step
             lr = step / dts*0.5  # alpha_t * 0.5 in the original reample implementation
             if verbose: print(f"Running DPS conditioning with LR={lr:.4f}")
@@ -339,7 +340,7 @@ class ShortcutSampler(object):
 
                 # Performing only every 10 steps (or so)
                 # TODO: also make this not hard-coded
-                if i % 10 == 0 :
+                if i % 5 == 0 :
                 # if is_closest_action(dts,i): # % 1 == 0 :
                     if verbose: print(f"Index = {i}")
                     if verbose: print(f"Iterating over  = {list(range(i, min(i+inter_timesteps, -1)))}")
@@ -357,7 +358,7 @@ class ShortcutSampler(object):
                                             unconditional_guidance_scale=unconditional_guidance_scale,
                                             unconditional_conditioning=unconditional_conditioning,
                                             verbose=verbose)
-                        
+
                     # Some arbitrary scheduling for sigma
                     if dts-step > 1: #not last step
                         sigma = gamma*(1 - a_prev) / (1 - a_t) * (1 - a_t / a_prev)  
@@ -382,7 +383,8 @@ class ShortcutSampler(object):
                         opt_var = self.solve_bp_fft_operator(y=measurement, x0=pseudo_x0_pixel,kernel=kernel)
                         
                         opt_var = self.model.encode_first_stage(opt_var) # Going back into latent space
-
+                        if i % log_every_t == 0 or i == total_steps - 1:
+                            intermediates['x_opt'].append(opt_var)
                         img = self.stochastic_resample(pseudo_x0=opt_var, x_t=x_t, a_t=a_prev, sigma=sigma)
                         # img = self.flow_matching_noise_injection(x0_y=opt_var,t_n=a_prev)
                         img = img.requires_grad_() # Seems to need to require grad here
@@ -396,18 +398,19 @@ class ShortcutSampler(object):
                                                              operator_fn=operator_fn,
                                                              verbose=verbose)
 
-
+                        if i % log_every_t == 0 or i == total_steps - 1:
+                            intermediates['x_opt'].append(pseudo_x0)
                         sigma = gamma * (1-a_prev)/(1 - a_t) * (1 - a_t / a_prev) # Change the 40 value for each task
 
                         img = self.stochastic_resample(pseudo_x0=pseudo_x0, x_t=x_t, a_t=a_prev, sigma=sigma)
                         # img = self.flow_matching_noise_injection(x0_y=opt_var,t_n=a_prev)
-
+            if len(intermediates['x_opt']) <  len(intermediates['pred_x0']) and (i % log_every_t == 0 or i == total_steps - 1):
+                intermediates['x_opt'].append(None)
             # Callback functions if needed
             if callback: callback(i)
             if img_callback: img_callback(pred_x0, i)
             if i % log_every_t == 0 or i == total_steps - 1:
                 intermediates['x_inter'].append(img)
-                intermediates['pred_x0'].append(pred_x0)       
         
         if not only_dps:
             psuedo_x0, _ = self.latent_optimization(measurement=measurement,

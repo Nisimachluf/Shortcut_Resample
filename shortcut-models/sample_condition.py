@@ -77,7 +77,8 @@ sample_fn = partial(sampler.posterior_sampler, measurement_cond_fn=measurement_c
                                         unconditional_conditioning=None, 
                                         eta=args.ddim_eta,
                                         only_dps=False,
-                                        timesteps=args.shortcut_steps)
+                                        timesteps=args.shortcut_steps,
+                                        log_every_t=1)
 
 # Working directory
 if args.save_dir:
@@ -131,7 +132,7 @@ for i, ref_img in enumerate(loader):
       y_n = noiser(y).to(device)
 
     # Sampling
-    samples_ddim, _ = sample_fn(measurement=y_n)
+    samples_ddim, intermediates = sample_fn(measurement=y_n)
     tot_time = tot_time + time() - t0
     x_samples_ddim = model.decode_first_stage(samples_ddim.detach())
 
@@ -145,6 +146,12 @@ for i, ref_img in enumerate(loader):
       plt.imsave(os.path.join(out_path, 'input', fname+'_true.png'), true)
       plt.imsave(os.path.join(out_path, 'label', fname+'_label.png'), label)
       plt.imsave(os.path.join(out_path, 'recon', fname+'_recon.png'), reconstructed)
+      
+      for k, v in intermediates.items():
+        for idx, z in enumerate(v):
+          if z is not None:
+            z_d = clear_color(model.decode_first_stage(z.detach()))
+            plt.imsave(os.path.join(out_path, 'progress', fname+f'_{k}_{idx}.png'), z_d)
 
     psnr_cur = psnr(true, reconstructed)
     for met_name, metric in metrics.items():

@@ -286,7 +286,11 @@ class Blurkernel(nn.Module):
             n = np.zeros((self.kernel_size, self.kernel_size))
             n[self.kernel_size // 2,self.kernel_size // 2] = 1
             k = scipy.ndimage.gaussian_filter(n, sigma=self.std)
-            k = torch.from_numpy(k)
+            try:
+                k = torch.from_numpy(k)
+            except:
+                k = torch.as_tensor(k)
+                
             self.k = k
             for name, f in self.named_parameters():
                 f.data.copy_(k)
