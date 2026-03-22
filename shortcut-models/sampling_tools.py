@@ -34,7 +34,7 @@ def denoising_step(model, x, ti, denoise_timesteps, labels, cfg_scale, num_class
         v = v_pred_uncond + cfg_scale * (v_pred_label - v_pred_uncond)
 
     # Euler sampling
-    end = 1-t
+    end = 1-t   
     x = x + v * delta_t
     pseudo_x0 = x + v * end
     return x, pseudo_x0

@@ -18,3 +18,5 @@ datasets
 launch.json
 data
 shortcut-models/notebooks/results
+shortcut-models/shortcut_restoration_results
+*.pt
