@@ -375,6 +375,8 @@ def get_debluring_tools(kernel_size=61, std=3.0, noise_sigma=0.05, device="cuda"
             
     return k.float(), GaussianNoise(noise_sigma)
 
+import torch.nn.functional as F
+
 def build_regularly_decaying_schedule(dts):
     if dts == 128:
         return build_step_schedule([1.0], [dts])
