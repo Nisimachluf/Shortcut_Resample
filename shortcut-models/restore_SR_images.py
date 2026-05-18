@@ -13,12 +13,13 @@ from PIL import Image
 from our_utils import *
 from metrics import PSNR, SSIM, LPIPS
 from our_restoration_method import shortcut_restoration, build_step_schedule, shortcut_refinement
+from down_sampler import Resizer, SuperResolutionOperator
 seed(1210)
 
 parser = argparse.ArgumentParser(description="Shortcut image restoration")
 parser.add_argument("--run_name",   type=str,   default="run",           help="Base name for the output run folder")
-parser.add_argument("--out_dir",    type=str,   default="shortcut_restoration_results", help="Root output directory")
-parser.add_argument("--images_dir", type=str,   default="'/private/tirer-lab/coheny78/CelebA_HQ_PNGs/validation", help="Directory containing input images")
+parser.add_argument("--out_dir",    type=str,   default="shortcut_restoration_results_SR", help="Root output directory")
+parser.add_argument("--images_dir", type=str,   default="/private/tirer-lab/coheny78/CelebA/validation", help="Directory containing input images")
 parser.add_argument("--num_images", type=int,   default=100,             help="Number of images to process")
 parser.add_argument("--ts",         type=int,   default=0,               help="Start timestep")
 parser.add_argument("--dts",        type=int,   default=64,              help="Number of diffusion steps")
@@ -91,12 +92,14 @@ metrics = {"lpips": LPIPS(),
 
 device = args.device
 images_dir = args.images_dir
-images_paths = glob(osp.join(images_dir, "*.jpg"))
+images_paths = glob(osp.join(images_dir, "*.png"))
 shuffle(images_paths)
 
 kernel, noiser = get_debluring_tools()
+image_SHAPE = (1, 3, 256, 256)
+scale_factor = 4
+sr_op = SuperResolutionOperator(in_shape=image_SHAPE, scale_factor=scale_factor, device=device)
 
-blur = lambda img: apply_convolution_operator(img, kernel)
 model, vae = load_models()
 
 details_path = osp.join(run_dir, "details.csv")
@@ -104,12 +107,15 @@ summary_path = osp.join(run_dir, "summary.csv")
 
 details_rows = []
 metric_names = list(metrics.keys())
-
+inv_opt_func = lambda residual: sr_op.transpose(residual)
+# inv_opt_func = lambda y, x: sr_op.project(data=x, measurement=y)
 for imgp in images_paths[:args.num_images]:
     img_name = osp.splitext(osp.basename(imgp))[0]
     img_t, img = read_image_to_tensor(imgp, return_np=True)
     img_t = img_t.to(device)
-    y = noiser(blur(img_t))
+    y = noiser(sr_op.forward(img_t))
+    print(f"Going from {img_t.shape} to {y.shape}")
+
 
     # save input (clean) and distorted images
     if args.log_images:
@@ -119,19 +125,24 @@ for imgp in images_paths[:args.num_images]:
     t_start = time.time()
     # schedule = list(zip(*build_regularly_decaying_schedule(args.dts)))
     if args.refine:
-        restored_img_z, intermediates = shortcut_refinement(int(np.log2(args.dts)), vae, model, blur, y, lr_factor=args.lr_factor) #, schedule=schedule)
+        restored_img_z, intermediates = shortcut_refinement(int(np.log2(args.dts)), vae, model, sr_op.forward, y, lr_factor=args.lr_factor) #, schedule=schedule)
     else:
-        inv_opt = lambda y, x: solve_bp_fft_operator2(y, x, kernel, 0.1)
-        restored_img_z, intermediates = shortcut_restoration(vae, model, blur, y, ts=args.ts, dts=args.dts, log_every=args.log_every, lr_factor=args.lr_factor, latent_opt_frac=args.latent_opt_phase, inv_opt=inv_opt) #, schedule=schedule)
+        # inv_opt = lambda y, x: sr_op.project(data=x, measurement=y)
+        target_latent_shape = (1, 4, 32, 32) 
+        z_t = torch.randn(target_latent_shape).to(device)
+        restored_img_z, intermediates = shortcut_restoration(vae, model, sr_op.forward, y,z_t=z_t, ts=args.ts, dts=args.dts, log_every=args.log_every, lr_factor=args.lr_factor, latent_opt_frac=args.latent_opt_phase, inv_opt=inv_opt_func) #, schedule=schedule,)
     
     elapsed = time.time() - t_start
 
     restored_image = decode(restored_img_z, vae, rescale=True)
+    test_img = restored_image[0] # Shape: (C, H, W)
+    print(f"Final Metric Input Shape: {test_img.shape}")
 
-    # save restored image
+
+    # # save restored image
     if args.log_images:
-        save_img(restored_image[0] if isinstance(restored_image, (list, np.ndarray)) and np.array(restored_image).ndim > 3
-                 else restored_image[0], osp.join(dirs["restored"], f"{img_name}.jpg"))
+        save_img(test_img if isinstance(test_img, (list, np.ndarray)) and np.array(test_img).ndim > 3
+                 else test_img, osp.join(dirs["restored"], f"{img_name}.jpg"))
 
     # save intermediates (last logged frame per key when log_every > 0)
     if args.log_images:
